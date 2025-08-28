@@ -1,0 +1,356 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Teste de Subtom — Make de 5 Minutos</title>
+<style>
+  :root { --bg:#f3ebe5; --ink:#583c30; --accent:#c69887; }
+  body{font-family:Inter,system-ui,Segoe UI,Roboto,Arial,sans-serif;background:var(--bg);color:var(--ink);margin:0;padding:20px;}
+  h1{margin:10px 0 6px;font-weight:800;letter-spacing:.2px}
+  .wrap{max-width:980px;margin:0 auto}
+  .card{background:#fff;border-radius:14px;box-shadow:0 8px 24px rgba(0,0,0,.06);padding:18px;margin:14px 0}
+  .row{display:flex;gap:14px;flex-wrap:wrap}
+  video,canvas{max-width:100%;border-radius:12px;background:#000}
+  button{background:var(--ink);color:#fff;border:0;border-radius:10px;padding:10px 14px;font-weight:700;cursor:pointer}
+  button.alt{background:#fff;color:var(--ink);border:2px solid var(--ink)}
+  .pill{display:inline-block;border:1px solid var(--accent);color:var(--ink);padding:6px 10px;border-radius:999px;margin-right:6px;background:#fff}
+  .sw{width:28px;height:28px;border-radius:6px;border:1px solid #ddd;margin-right:6px;display:inline-block}
+  .muted{opacity:.8}
+  .grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+  label input{display:none}
+  .toolbar{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+  .small{font-size:.9rem}
+  .hint{background:#fff7ef;padding:10px 12px;border-left:4px solid var(--accent);border-radius:8px}
+  .result{font-size:1.1rem;line-height:1.4}
+  .kbd{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;background:#f2f2f2;border:1px solid #e2e2e2;border-bottom-width:3px;padding:2px 6px;border-radius:6px}
+  .brandlist{display:grid;grid-template-columns:1fr;gap:10px;margin-top:10px}
+  .brand{border:1px solid #f0e6de;border-radius:10px;padding:10px}
+  .brand b{display:block;margin-bottom:6px}
+  .chips{display:flex;flex-wrap:wrap;gap:6px}
+  .chip{background:#f7efe8;border:1px solid #ead9d1;border-radius:999px;padding:6px 10px;font-size:.9rem}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Teste de Subtom <span class="pill">Make de 5 Minutos</span></h1>
+  <p class="muted">Use a câmera <b>ou</b> faça upload de uma foto. Desenhe um retângulo na <b>bochecha</b> para medir a cor da pele (evite sombras, blush e áreas muito iluminadas).</p>
+
+  <div class="card">
+    <div class="toolbar">
+      <button id="startCam">Abrir câmera</button>
+      <button id="shot" class="alt">Capturar foto</button>
+      <label class="alt"><span class="pill">ou</span> <button id="uploadBtn" class="alt">Carregar foto</button>
+        <input type="file" id="file" accept="image/*">
+      </label>
+      <button id="clearSel">Limpar seleção</button>
+    </div>
+
+    <div class="row">
+      <video id="video" playsinline autoplay muted width="480" height="360" style="display:none"></video>
+      <canvas id="canvas" width="640" height="480"></canvas>
+    </div>
+
+    <p class="small muted">Dica: chegue perto de uma janela (luz natural), limpe a lente e evite luz amarela forte. Toque e arraste no canvas para marcar a área da bochecha.</p>
+  </div>
+
+  <div class="grid">
+    <div class="card">
+      <h3>Resultado</h3>
+      <div class="result" id="result">Aguardando seleção…</div>
+      <div id="swatches" style="margin-top:8px;"></div>
+      <p class="small muted">Classificação baseada na média do retângulo selecionado em <span class="kbd">CIELAB</span> (a*, b*). É uma estimativa simples e pode variar com a luz.</p>
+    </div>
+    <div class="card">
+      <h3>Aplicar base na área selecionada</h3>
+      <div class="toolbar">
+        <select id="shadeSelect"></select>
+        <button id="applyShade">Aplicar na foto</button>
+        <button id="removeShade" class="alt">Remover</button>
+      </div>
+      <p class="small muted">Isso simula uma base por cima da área marcada, apenas para visualização.</p>
+      <div class="hint small" style="margin-top:10px;">
+        <b>Importante:</b> as sugestões por marca são aproximadas e servem como guia inicial. Sempre confirme no maxilar, em luz natural.
+      </div>
+      <div id="brandSuggestions" class="brandlist"></div>
+    </div>
+  </div>
+
+  <div class="card hint">
+    <b>Boas práticas:</b> foto em luz natural, sem maquiagem; selecione a <b>bochecha</b> (evite olheiras e boca); mantenha o rosto centralizado.
+  </div>
+</div>
+
+<script>
+// --- Camera & Canvas ---
+const video = document.getElementById('video');
+const canvas = document.getElementById('canvas');
+const ctx = canvas.getContext('2d');
+const startCam = document.getElementById('startCam');
+const shot = document.getElementById('shot');
+const file = document.getElementById('file');
+const uploadBtn = document.getElementById('uploadBtn');
+
+let stream = null;
+let img = new Image();
+let drawing = false, sx=0, sy=0, ex=0, ey=0;
+let overlay = null; // temp layer for "base" application
+
+function drawImageFit(image){
+  // Fit image inside canvas with letterboxing
+  const cw = canvas.width, ch = canvas.height;
+  const iw = image.width, ih = image.height;
+  const r = Math.min(cw/iw, ch/ih);
+  const nw = iw*r, nh = ih*r;
+  const ox = (cw-nw)/2, oy = (ch-nh)/2;
+  ctx.clearRect(0,0,cw,ch);
+  ctx.drawImage(image,0,0,iw,ih,ox,oy,nw,nh);
+  return {ox,oy,nw,nh};
+}
+
+let lastFit = null;
+img.onload = ()=>{ lastFit = drawImageFit(img); };
+
+startCam.onclick = async ()=>{
+  try{
+    stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user' }, audio:false});
+    video.srcObject = stream;
+    video.style.display = 'block';
+  }catch(e){ alert('Não foi possível abrir a câmera: ' + e.message + '\nDica: para usar a câmera, hospede este arquivo em HTTPS (Netlify/GitHub Pages) ou use o botão "Carregar foto".'); }
+};
+
+shot.onclick = ()=>{
+  if(!video.srcObject){ alert('Abra a câmera primeiro.'); return; }
+  canvas.width = video.videoWidth || 640;
+  canvas.height = video.videoHeight || 480;
+  ctx.drawImage(video,0,0,canvas.width,canvas.height);
+  img = new Image();
+  img.onload = ()=>{ drawImageFit(img); };
+  img.src = canvas.toDataURL('image/png');
+  video.style.display = 'none';
+};
+
+uploadBtn.onclick = ()=> file.click();
+file.onchange = (e)=>{
+  const f = e.target.files[0];
+  if(!f) return;
+  const reader = new FileReader();
+  reader.onload = ev => { img = new Image(); img.onload=()=>{ drawImageFit(img); }; img.src = ev.target.result; };
+  reader.readAsDataURL(f);
+};
+
+// --- Selection rectangle ---
+canvas.addEventListener('mousedown', (ev)=>{
+  const rect = canvas.getBoundingClientRect();
+  sx = ev.clientX - rect.left; sy = ev.clientY - rect.top; drawing = true;
+});
+canvas.addEventListener('mousemove', (ev)=>{
+  if(!drawing) return;
+  const rect = canvas.getBoundingClientRect();
+  ex = ev.clientX - rect.left; ey = ev.clientY - rect.top;
+  if(img.complete) drawImageFit(img);
+  drawSelection();
+});
+canvas.addEventListener('mouseup', ()=>{ drawing=false; analyzeSelection(); });
+document.getElementById('clearSel').onclick = ()=>{ if(img.complete) drawImageFit(img); overlay=null; };
+
+function drawSelection(){
+  const x = Math.min(sx,ex), y = Math.min(sy,ey);
+  const w = Math.abs(ex-sx), h = Math.abs(ey-sy);
+  ctx.save();
+  ctx.strokeStyle = '#c69887'; ctx.lineWidth = 2; ctx.setLineDash([6,4]);
+  ctx.strokeRect(x,y,w,h);
+  ctx.restore();
+}
+
+// --- Color analysis ---
+function rgb2xyz(r,g,b){
+  r/=255; g/=255; b/=255;
+  r = r>0.04045 ? Math.pow((r+0.055)/1.055,2.4) : r/12.92;
+  g = g>0.04045 ? Math.pow((g+0.055)/1.055,2.4) : g/12.92;
+  b = b>0.04045 ? Math.pow((b+0.055)/1.055,2.4) : b/12.92;
+  const x = r*0.4124 + g*0.3576 + b*0.1805;
+  const y = r*0.2126 + g*0.7152 + b*0.0722;
+  const z = r*0.0193 + g*0.1192 + b*0.9505;
+  return [x,y,z];
+}
+function xyz2lab(x,y,z){
+  const refX=0.95047, refY=1.00000, refZ=1.08883;
+  x/=refX; y/=refY; z/=refZ;
+  const fx = x>0.008856? Math.cbrt(x): (7.787*x)+(16/116);
+  const fy = y>0.008856? Math.cbrt(y): (7.787*y)+(16/116);
+  const fz = z>0.008856? Math.cbrt(z): (7.787*z)+(16/116);
+  const L = (116*fy)-16;
+  const a = 500*(fx-fy);
+  const b = 200*(fy-fz);
+  return [L,a,b];
+}
+function avgColorInRect(x,y,w,h){
+  const d = ctx.getImageData(x,y,w,h).data;
+  let r=0,g=0,b=0,n=0;
+  for(let i=0;i<d.length;i+=4){
+    r+=d[i]; g+=d[i+1]; b+=d[i+2]; n++;
+  }
+  return [r/n,g/n,b/n];
+}
+
+const result = document.getElementById('result');
+const swatches = document.getElementById('swatches');
+
+// Demo palette (hex -> label -> undertone)
+const palette = [
+  {name:'L1 Porcelana Fria', hex:'#f6e8da', undertone:'frio'},
+  {name:'L2 Marfim Neutro', hex:'#f3e0cf', undertone:'neutro'},
+  {name:'M1 Bege Quente', hex:'#e6c6a6', undertone:'quente'},
+  {name:'M2 Bege Neutro', hex:'#dab89c', undertone:'neutro'},
+  {name:'M3 Dourado Médio', hex:'#cca27f', undertone:'quente'},
+  {name:'T1 Caramelo Neutro', hex:'#b5835a', undertone:'neutro'},
+  {name:'T2 Âmbar Quente', hex:'#9a6a47', undertone:'quente'},
+  {name:'T3 Cacau Frio', hex:'#7b4e35', undertone:'frio'},
+  {name:'O1 Oliva Claro', hex:'#d6c1a2', undertone:'oliva'},
+  {name:'O2 Oliva Médio', hex:'#b89b79', undertone:'oliva'}
+];
+
+const shadeSelect = document.getElementById('shadeSelect');
+palette.forEach((p,i)=>{
+  const opt = document.createElement('option');
+  opt.value = i; opt.textContent = `${p.name} — ${p.undertone}`;
+  shadeSelect.appendChild(opt);
+});
+
+// --- SUGESTÕES POR MARCA (aproximadas) ---
+const SUGGESTIONS = {
+  frio: {
+    "Maybelline Fit Me": ["115 Ivory"],
+    "MAC": ["NW15"],
+    "Boca Rosa (Stick Pele)": ["BR12 (frio/neutro)"],
+    "Eudora (Niina Secrets)": ["Hidra Glow 00 ou 05 (tons claros frios/neutros)"],
+    "Mary Kay (TimeWise 3D)": ["C100–C110 (Ivory frio)"],
+    "O Boticário (Make B./Intense)": ["220 (fundo rosado)"],
+    "Vizzela (Base FIX)": ["Cor 7 (amarelo suave, ajustar luz)"]
+  },
+  neutro: {
+    "Maybelline Fit Me": ["120 Classic Ivory"],
+    "MAC": ["N20"],
+    "Boca Rosa (Stick Pele)": ["BR13 / BR14"],
+    "Eudora (Niina Secrets)": ["Hidra Glow 10 (neutro médio)"],
+    "Mary Kay (TimeWise 3D)": ["N140–N160 (Ivory/Beige neutro)"],
+    "O Boticário (Make B./Intense)": ["230 (neutro)"],
+    "Vizzela (Base FIX)": ["Cor 8–9 (neutro)"]
+  },
+  quente: {
+    "Maybelline Fit Me": ["128 Warm Nude"],
+    "MAC": ["NC20"],
+    "Boca Rosa (Stick Pele)": ["BR15 / BR16 (quente)"],
+    "Eudora (Niina Secrets)": ["Hidra Glow 45 / 70 (médio-quente)"],
+    "Mary Kay (TimeWise 3D)": ["W130–W150 (Ivory quente)"],
+    "O Boticário (Make B./Intense)": ["240 / 250 (amarelado/dourado)"],
+    "Vizzela (Base FIX)": ["Cor 9 (amarelado)"]
+  },
+  oliva: {
+    "Maybelline Fit Me": ["228 Soft Tan (olive leve)"],
+    "MAC": ["NC25–NC30 (oliva claro/médio)"],
+    "Boca Rosa (Stick Pele)": ["BR16 (ou mistura p/ oliva)"],
+    "Eudora (Niina Secrets)": ["Hidra Glow 75 / 80 (tendência oliva)"],
+    "Mary Kay (TimeWise 3D)": ["Beige C/N com viés oliva (testar C170/N180)"],
+    "O Boticário (Make B./Intense)": ["Misturar neutro + quente (sem oliva explícito)"],
+    "Vizzela (Base FIX)": ["— (sem oliva explícito; testar 8–9 ou mistura)"]
+  }
+};
+
+function renderBrandSuggestions(undertone){
+  const container = document.getElementById('brandSuggestions');
+  container.innerHTML = '';
+  const set = SUGGESTIONS[undertone] || {};
+  Object.keys(set).forEach(brand=>{
+    const card = document.createElement('div');
+    card.className = 'brand';
+    const title = document.createElement('b');
+    title.textContent = brand;
+    const chips = document.createElement('div');
+    chips.className = 'chips';
+    set[brand].forEach(txt=>{
+      const span = document.createElement('span');
+      span.className = 'chip';
+      span.textContent = txt;
+      chips.appendChild(span);
+    });
+    card.appendChild(title);
+    card.appendChild(chips);
+    container.appendChild(card);
+  });
+}
+
+function analyzeSelection(){
+  const x = Math.min(sx,ex), y = Math.min(sy,ey);
+  const w = Math.abs(ex-sx), h = Math.abs(ey-sy);
+  if(w<8 || h<8){ result.textContent = 'Selecione uma área maior na bochecha.'; return; }
+  const [r,g,b] = avgColorInRect(x,y,w,h);
+  const [x1,y1,z1] = rgb2xyz(r,g,b);
+  const [L,a,b2] = xyz2lab(x1,y1,z1);
+
+  // Heurística simples:
+  let undertone = 'neutro';
+  if(a > 6 && b2 > 8) undertone = 'quente';
+  else if(a < -2 || b2 < 0) undertone = 'frio';
+  if(a < 2 && a > -4 && b2 > 4) undertone = 'oliva';
+
+  // Escolhe tom mais próximo por distância em LAB
+  function hexToRgb(hex){ hex=hex.replace('#',''); return [parseInt(hex.substring(0,2),16), parseInt(hex.substring(2,4),16), parseInt(hex.substring(4,6),16)]; }
+  function deltaE(lab1, lab2){ const dl=lab1[0]-lab2[0], da=lab1[1]-lab2[1], db=lab1[2]-lab2[2]; return Math.sqrt(dl*dl+da*da+db*db); }
+  const target = [L,a,b2];
+  let best = null, bestD = 1e9;
+  palette.forEach(p=>{
+    const [rr,gg,bb] = hexToRgb(p.hex);
+    const [xx,yy,zz] = rgb2xyz(rr,gg,bb);
+    const lab = xyz2lab(xx,yy,zz);
+    const d = deltaE(target, lab);
+    if(d<bestD){bestD=d; best=p;}
+  });
+
+  // Exibe amostras
+  swatches.innerHTML = '';
+  const sel = document.createElement('span'); sel.innerHTML = `Cor média selecionada:`; swatches.appendChild(sel);
+  const sw1 = document.createElement('span'); sw1.className='sw'; sw1.style.backgroundColor=`rgb(${r|0},${g|0},${b|0})`; swatches.appendChild(sw1);
+  const sel2 = document.createElement('span'); sel2.style.marginLeft='10px'; sel2.innerHTML=`Sugerido:`; swatches.appendChild(sel2);
+  const sw2 = document.createElement('span'); sw2.className='sw'; sw2.style.backgroundColor=best.hex; swatches.appendChild(sw2);
+
+  result.innerHTML = `
+    <b>Subtom estimado:</b> ${undertone.toUpperCase()}<br>
+    <b>Sugestão (paleta demo):</b> ${best.name} <span class="muted">(${best.undertone})</span><br>
+    <span class="small muted">L*: ${L.toFixed(1)} a*: ${a.toFixed(1)} b*: ${b2.toFixed(1)} | ΔE com paleta: ${bestD.toFixed(1)}</span>
+  `;
+
+  // Preseleciona shade demo
+  const idx = palette.findIndex(p=>p.name===best.name);
+  if(idx>=0) shadeSelect.value = idx;
+
+  // Sugestões por marca
+  renderBrandSuggestions(undertone);
+}
+
+// --- Apply shade overlay ---
+document.getElementById('applyShade').onclick = ()=>{
+  if(!img.complete){ alert('Tire/abra uma foto primeiro.'); return; }
+  const x = Math.min(sx,ex), y = Math.min(sy,ey);
+  const w = Math.abs(ex-sx), h = Math.abs(ey-sy);
+  if(w<8 || h<8){ alert('Selecione a área da bochecha primeiro.'); return; }
+  const sel = palette[parseInt(shadeSelect.value,10)];
+  ctx.save();
+  ctx.globalAlpha = 0.35;
+  ctx.fillStyle = sel.hex;
+  ctx.fillRect(x,y,w,h);
+  ctx.restore();
+  overlay = {x,y,w,h,color:sel.hex};
+};
+
+document.getElementById('removeShade').onclick = ()=>{
+  if(img.complete) drawImageFit(img);
+  if(overlay){
+    sx = overlay.x; sy=overlay.y; ex=overlay.x+overlay.w; ey=overlay.y+overlay.h;
+    drawSelection();
+  }
+};
+</script>
+</body>
+</html>
