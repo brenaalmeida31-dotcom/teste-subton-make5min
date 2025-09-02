@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Teste de Subtom — Make de 5 Minutos (com detecção de rosto)</title>
+<title>Teste de Subtom — Make de 5 Minutos (detecção de rosto estável)</title>
 <style>
   :root { --bg:#f3ebe5; --ink:#583c30; --accent:#c69887; }
   body{font-family:Inter,system-ui,Segoe UI,Roboto,Arial,sans-serif;background:var(--bg);color:var(--ink);margin:0;padding:20px;}
@@ -44,6 +44,7 @@
         <input type="file" id="file" accept="image/*">
       </label>
       <button id="clearSel">Limpar seleção</button>
+      <button id="toggleDebug" class="alt">Mostrar contorno do rosto (debug)</button>
     </div>
 
     <div class="row">
@@ -71,7 +72,7 @@
       </div>
       <p class="small muted">“Aplicar base no rosto (auto)” usa o contorno do rosto detectado para criar a máscara.</p>
       <div class="hint small" style="margin-top:10px;">
-        <b>Nota:</b> a detecção é feita após capturar a foto ou carregar a imagem. Em celulares, pode levar 1–2s.
+        <b>Nota:</b> a detecção é feita após capturar a foto ou carregar a imagem. Em celulares, pode levar ~1–2s.
       </div>
       <div id="brandSuggestions" class="brandlist"></div>
     </div>
@@ -82,12 +83,12 @@
   </div>
 </div>
 
-<!-- MediaPipe FaceMesh (detecção de rosto via landmarks) -->
+<!-- MediaPipe FaceMesh (CDN oficiais) -->
 <script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/face_mesh.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js"></script>
 
 <script>
-// ---------- Base do app (igual à sua versão anterior) ----------
+// ------- Base do app -------
 const video = document.getElementById('video');
 const canvas = document.getElementById('canvas');
 const ctx = canvas.getContext('2d');
@@ -96,11 +97,11 @@ const shot = document.getElementById('shot');
 const file = document.getElementById('file');
 const uploadBtn = document.getElementById('uploadBtn');
 
-let stream = null;
 let img = new Image();
 let drawing = false, sx=0, sy=0, ex=0, ey=0;
-let overlay = null; // dados da última aplicação
-let lastDetections = null; // landmarks detectados
+let overlay = null;
+let lastLandmarks = null;
+let debugOn = false;
 
 function drawImageFit(image){
   const cw = canvas.width, ch = canvas.height;
@@ -110,17 +111,15 @@ function drawImageFit(image){
   const ox = (cw-nw)/2, oy = (ch-nh)/2;
   ctx.clearRect(0,0,cw,ch);
   ctx.drawImage(image,0,0,iw,ih,ox,oy,nw,nh);
-  return {ox,oy,nw,nh};
 }
-let lastFit = null;
-img.onload = ()=>{ lastFit = drawImageFit(img); runFaceMeshOnCanvas(); };
+img.onload = ()=>{ drawImageFit(img); detectFaceOnCanvas(); };
 
 startCam.onclick = async ()=>{
   try{
-    stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user' }, audio:false});
+    const stream = await navigator.mediaDevices.getUserMedia({ video:{facingMode:'user'}, audio:false});
     video.srcObject = stream;
     video.style.display = 'block';
-  }catch(e){ alert('Não foi possível abrir a câmera: ' + e.message + '\nDica: hospede em HTTPS (GitHub Pages/Netlify) ou use "Carregar foto".'); }
+  }catch(e){ alert('Não foi possível abrir a câmera: ' + e.message + '\nUse HTTPS (GitHub Pages) ou "Carregar foto".'); }
 };
 
 shot.onclick = ()=>{
@@ -129,7 +128,7 @@ shot.onclick = ()=>{
   canvas.height = video.videoHeight || 480;
   ctx.drawImage(video,0,0,canvas.width,canvas.height);
   img = new Image();
-  img.onload = ()=>{ drawImageFit(img); runFaceMeshOnCanvas(); };
+  img.onload = ()=>{ drawImageFit(img); detectFaceOnCanvas(); };
   img.src = canvas.toDataURL('image/png');
   video.style.display = 'none';
 };
@@ -139,11 +138,11 @@ file.onchange = (e)=>{
   const f = e.target.files[0];
   if(!f) return;
   const reader = new FileReader();
-  reader.onload = ev => { img = new Image(); img.onload=()=>{ drawImageFit(img); runFaceMeshOnCanvas(); }; img.src = ev.target.result; };
+  reader.onload = ev => { img = new Image(); img.onload=()=>{ drawImageFit(img); detectFaceOnCanvas(); }; img.src = ev.target.result; };
   reader.readAsDataURL(f);
 };
 
-// Seleção manual
+// seleção manual
 canvas.addEventListener('mousedown', (ev)=>{
   const rect = canvas.getBoundingClientRect();
   sx = ev.clientX - rect.left; sy = ev.clientY - rect.top; drawing = true;
@@ -156,15 +155,16 @@ canvas.addEventListener('mousemove', (ev)=>{
   drawSelection();
 });
 canvas.addEventListener('mouseup', ()=>{ drawing=false; analyzeSelection(); });
-document.getElementById('clearSel').onclick = ()=>{ if(img.complete) drawImageFit(img); overlay=null; };
+document.getElementById('clearSel').onclick = ()=>{ if(img.complete) drawImageFit(img); overlay=null; lastLandmarks && debugOn && drawFaceOval(lastLandmarks,true); };
+document.getElementById('toggleDebug').onclick = ()=>{ debugOn = !debugOn; if(img.complete){ drawImageFit(img); if(debugOn && lastLandmarks) drawFaceOval(lastLandmarks,true); } };
 
 function drawSelection(){
   const x = Math.min(sx,ex), y = Math.min(sy,ey);
   const w = Math.abs(ex-sx), h = Math.abs(ey-sy);
-  ctx.save(); ctx.strokeStyle = '#c69887'; ctx.lineWidth = 2; ctx.setLineDash([6,4]); ctx.strokeRect(x,y,w,h); ctx.restore();
+  ctx.save(); ctx.strokeStyle='#c69887'; ctx.lineWidth=2; ctx.setLineDash([6,4]); ctx.strokeRect(x,y,w,h); ctx.restore();
 }
 
-// ---- Conversões de cor / Análise (igual) ----
+// ------- Cores / Subtom -------
 function rgb2xyz(r,g,b){
   r/=255; g/=255; b/=255;
   r = r>0.04045 ? Math.pow((r+0.055)/1.055,2.4) : r/12.92;
@@ -192,7 +192,6 @@ function avgColorInRect(x,y,w,h){
   for(let i=0;i<d.length;i+=4){ r+=d[i]; g+=d[i+1]; b+=d[i+2]; n++; }
   return [r/n,g/n,b/n];
 }
-
 const result = document.getElementById('result');
 const swatches = document.getElementById('swatches');
 
@@ -208,11 +207,9 @@ const palette = [
   {name:'O1 Oliva Claro', hex:'#d6c1a2', undertone:'oliva'},
   {name:'O2 Oliva Médio', hex:'#b89b79', undertone:'oliva'}
 ];
-
 const shadeSelect = document.getElementById('shadeSelect');
 palette.forEach((p,i)=>{ const opt=document.createElement('option'); opt.value=i; opt.textContent=`${p.name} — ${p.undertone}`; shadeSelect.appendChild(opt); });
 
-// sugestões por marca (reduzido aqui para caber)
 const SUGGESTIONS = {
   frio: {"Maybelline Fit Me":["115 Ivory"],"MAC":["NW15"],"Boca Rosa (Stick Pele)":["BR12"],"Eudora (Niina Secrets)":["Hidra Glow 00/05"],"Mary Kay (TimeWise 3D)":["C100–C110"],"O Boticário":["220 (rosado)"],"Vizzela":["7 (amarelo suave)"]},
   neutro: {"Maybelline Fit Me":["120 Classic Ivory"],"MAC":["N20"],"Boca Rosa":["BR13/BR14"],"Eudora":["Hidra Glow 10"],"Mary Kay":["N140–N160"],"O Boticário":["230 (neutro)"],"Vizzela":["8–9 (neutro)"]},
@@ -261,75 +258,78 @@ function analyzeSelection(){
   renderBrandSuggestions(undertone);
 }
 
-// Aplicar base na seleção manual
+// aplicar na seleção manual
 document.getElementById('applyShade').onclick = ()=>{
-  if(!img.complete){ alert('Tire/abra uma foto primeiro.'); return; }
   const x = Math.min(sx,ex), y = Math.min(sy,ey);
   const w = Math.abs(ex-sx), h = Math.abs(ey-sy);
   if(w<8 || h<8){ alert('Selecione a área da bochecha primeiro.'); return; }
   const sel = palette[parseInt(shadeSelect.value,10)];
+  drawImageFit(img);
   ctx.save(); ctx.globalAlpha=0.35; ctx.fillStyle=sel.hex; ctx.fillRect(x,y,w,h); ctx.restore();
   overlay = {type:'rect', x,y,w,h,color:sel.hex};
 };
 
-// ----------- DETECÇÃO DO ROSTO (MediaPipe FaceMesh) -----------
+// ------- FaceMesh (detecção no próprio canvas) -------
 let faceMesh = null;
 function initFaceMesh(){
   if(faceMesh) return;
-  faceMesh = new FaceMesh.FaceMesh({locateFile: (file)=>`https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/${file}`});
+  faceMesh = new FaceMesh.FaceMesh({ locateFile: (file)=>`https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/${file}` });
   faceMesh.setOptions({ maxNumFaces:1, refineLandmarks:false, minDetectionConfidence:0.6, minTrackingConfidence:0.6 });
   faceMesh.onResults(res=>{
-    lastDetections = (res.multiFaceLandmarks && res.multiFaceLandmarks[0]) ? res.multiFaceLandmarks[0] : null;
+    lastLandmarks = (res.multiFaceLandmarks && res.multiFaceLandmarks[0]) ? res.multiFaceLandmarks[0] : null;
+    if(debugOn && lastLandmarks){ drawImageFit(img); drawFaceOval(lastLandmarks,true); }
   });
 }
-async function runFaceMeshOnCanvas(){
+async function detectFaceOnCanvas(){
   initFaceMesh();
-  // cria um bitmap da imagem atual do canvas
-  const bitmap = await createImageBitmap(canvas);
-  const off = new OffscreenCanvas(canvas.width, canvas.height);
-  const octx = off.getContext('2d');
-  octx.drawImage(bitmap,0,0);
-  await faceMesh.send({image: off});
+  // Envia o próprio canvas renderizado como imagem de entrada
+  await faceMesh.send({ image: canvas });
 }
 
-function faceOvalIndices(){ // indices do "contorno" do rosto (face oval) do MediaPipe
+function faceOvalIndices(){
+  // conjunto compacto para o "face oval" do MediaPipe
   return [10,338,297,332,284,251,389,356,454,323,361,288,397,365,379,378,400,377,152,148,176,149,150,136,172,58,132,93,234,127,162,21,54,103,67,109];
 }
-
-function applyBaseOnFace(){
-  if(!lastDetections){ alert('Não consegui detectar o rosto. Tente capturar novamente olhando de frente, com boa luz.'); return; }
-  const sel = palette[parseInt(shadeSelect.value,10)];
-  // Desenha máscara seguindo o contorno do rosto
+function drawFaceOval(landmarks, strokeOnly){
   const pts = faceOvalIndices().map(i => {
-    const p = lastDetections[i];
+    const p = landmarks[i];
     return {x: p.x * canvas.width, y: p.y * canvas.height};
   });
-  // redesenha imagem
-  drawImageFit(img);
-  // cria uma máscara
   ctx.save();
   ctx.beginPath();
   ctx.moveTo(pts[0].x, pts[0].y);
-  for(let i=1;i<pts.length;i++){ ctx.lineTo(pts[i].x, pts[i].y); }
+  for(let i=1;i<pts.length;i++) ctx.lineTo(pts[i].x, pts[i].y);
   ctx.closePath();
-  ctx.clip();                 // clip dentro do rosto
-  ctx.globalAlpha = 0.30;     // transparência da “base”
+  if(strokeOnly){
+    ctx.strokeStyle = '#c69887';
+    ctx.lineWidth = 2;
+    ctx.setLineDash([6,4]);
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+function applyBaseOnFace(){
+  if(!lastLandmarks){ alert('Não consegui detectar o rosto. Tente capturar/carregar novamente, com o rosto centralizado e boa luz.'); return; }
+  const sel = palette[parseInt(shadeSelect.value,10)];
+  const pts = faceOvalIndices().map(i => {
+    const p = lastLandmarks[i];
+    return {x: p.x * canvas.width, y: p.y * canvas.height};
+  });
+  drawImageFit(img);
+  ctx.save();
+  ctx.beginPath();
+  ctx.moveTo(pts[0].x, pts[0].y);
+  for(let i=1;i<pts.length;i++) ctx.lineTo(pts[i].x, pts[i].y);
+  ctx.closePath();
+  ctx.clip();
+  ctx.globalAlpha = 0.30;
   ctx.fillStyle = sel.hex;
   ctx.fillRect(0,0,canvas.width,canvas.height);
   ctx.restore();
   overlay = {type:'face', color:sel.hex};
 }
-
-document.getElementById('applyAuto').onclick = ()=>{
-  if(!img.complete){ alert('Tire/abra uma foto primeiro.'); return; }
-  // se não detectou ainda, roda e aplica após pequeno atraso
-  if(!lastDetections){ runFaceMeshOnCanvas().then(()=>applyBaseOnFace()); } else { applyBaseOnFace(); }
-};
-
-document.getElementById('removeShade').onclick = ()=>{
-  if(img.complete) drawImageFit(img);
-  if(overlay && overlay.type==='rect'){ sx=overlay.x; sy=overlay.y; ex=overlay.x+overlay.w; ey=overlay.y+overlay.h; drawSelection(); }
-};
+document.getElementById('applyAuto').onclick = ()=> applyBaseOnFace();
+document.getElementById('removeShade').onclick = ()=>{ if(img.complete) drawImageFit(img); if(overlay && overlay.type==='rect'){ drawSelection(); } if(debugOn && lastLandmarks) drawFaceOval(lastLandmarks,true); };
 </script>
 </body>
 </html>
